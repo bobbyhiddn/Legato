@@ -1,0 +1,2 @@
+# Legato
+Delegation through action. 
