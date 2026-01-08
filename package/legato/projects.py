@@ -166,13 +166,13 @@ From voice transcript {tasker_input['transcript_id']}:
     )
 
 
-def spawn_lab_repo(spec: ProjectSpec, org: str = "Legato") -> dict:
+def spawn_lab_repo(spec: ProjectSpec, org: str = None) -> dict:
     """
     Spawn a new Lab repository from template.
 
     Args:
         spec: Project specification
-        org: GitHub organization
+        org: GitHub organization (defaults to LAB_ORG env var or 'Legato')
 
     Returns:
         Repository creation result
@@ -180,6 +180,9 @@ def spawn_lab_repo(spec: ProjectSpec, org: str = "Legato") -> dict:
     token = os.environ.get("GH_TOKEN")
     if not token:
         raise RuntimeError("GH_TOKEN environment variable not set")
+
+    # Get org from parameter, env var, or default
+    org = org or os.environ.get("LAB_ORG", "Legato")
 
     repo_name = spec.get_repo_name(org)
     template_type = "note" if spec.scope == ProjectScope.NOTE else "chord"

@@ -113,12 +113,14 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.LIBRARY_PAT }}
+          LIBRARY_REPO: ${{ github.repository_owner }}/Legato.Library
         run: |
           python -m legato.knowledge --input routing.json --commit
 
       - name: Register signals with Listen
         env:
           GH_TOKEN: ${{ secrets.LISTEN_PAT }}
+          LISTEN_REPO: ${{ github.repository_owner }}/Legato.Listen
         run: |
           python -m legato.correlation --register-new
 
@@ -146,5 +148,6 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.LAB_PAT }}
+          LAB_ORG: ${{ github.repository_owner }}
         run: |
           python -m legato.projects --input routing.json --spawn-and-assign
