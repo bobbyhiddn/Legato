@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "legato"
 version = "0.3.0"
 description = "Voice transcripts to structured knowledge and executable projects"
-readme = "../README.md"
+readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
@@ -54,7 +54,7 @@ Repository = "https://github.com/Legato/Legato.Conduct"
 Issues = "https://github.com/Legato/Legato.Conduct/issues"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["package"]
 
 [tool.setuptools.package-data]
 legato = ["py.typed"]

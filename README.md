@@ -394,7 +394,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install -e package/
+        run: pip install -e .
 
       - name: Parse transcript into threads
         id: parse
@@ -432,7 +432,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install -e package/
+        run: pip install -e .
 
       - name: Classify threads and check correlation
         id: classify
@@ -467,7 +467,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install -e package/
+        run: pip install -e .
 
       - name: Extract and commit knowledge artifacts
         env:
@@ -500,7 +500,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install -e package/
+        run: pip install -e .
 
       - name: Create projects and assign Copilot
         env:
