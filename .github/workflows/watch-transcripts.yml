@@ -27,14 +27,10 @@ jobs:
 
       - name: Detect changes and process
         id: detect
-        env:
-          SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
-          CONDUCT_REPO: ${{ vars.CONDUCT_REPO || 'bobbyhiddn/Legato.Conduct' }}
         run: |
           set -e
 
           TODAY=$(date +%Y-%m-%d)
-          TRANSCRIPTS_TO_DISPATCH=""
 
           # Get all changed files in transcripts/
           CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'transcripts/' | grep -v '.gitkeep' || true)
@@ -65,29 +61,25 @@ jobs:
             if [[ "$BASENAME" == "manifest.yaml" ]]; then
               echo "  Manifest changed, checking for reprocess requests..."
 
-              python3 << PYEOF
-import yaml
-
-manifest_path = "$file"
-with open(manifest_path, 'r') as f:
-    manifest = yaml.safe_load(f) or {}
-
-transcripts = manifest.get('transcripts', {})
-reprocess_list = []
-
-for name, meta in transcripts.items():
-    if meta and meta.get('processed') == False:
-        reprocess_list.append(name)
-
-if reprocess_list:
-    print(f"  Found {len(reprocess_list)} transcript(s) to reprocess")
-    with open('/tmp/reprocess_from_manifest.txt', 'a') as f:
-        for name in reprocess_list:
-            dirname = "$DIRNAME"
-            f.write(f"{dirname}/{name}\n")
-else:
-    print("  No reprocess requests in manifest")
-PYEOF
+              python3 -c "
+          import yaml
+          manifest_path = '$file'
+          dirname = '$DIRNAME'
+          with open(manifest_path, 'r') as f:
+              manifest = yaml.safe_load(f) or {}
+          transcripts = manifest.get('transcripts', {})
+          reprocess_list = []
+          for name, meta in transcripts.items():
+              if meta and meta.get('processed') == False:
+                  reprocess_list.append(name)
+          if reprocess_list:
+              print(f'  Found {len(reprocess_list)} transcript(s) to reprocess')
+              with open('/tmp/reprocess_from_manifest.txt', 'a') as f:
+                  for name in reprocess_list:
+                      f.write(f'{dirname}/{name}\n')
+          else:
+              print('  No reprocess requests in manifest')
+          "
               continue
             fi
 
@@ -104,12 +96,12 @@ PYEOF
               if [ -f "$MANIFEST_PATH" ]; then
                 # Check if already processed
                 IS_PROCESSED=$(python3 -c "
-import yaml
-with open('$MANIFEST_PATH', 'r') as f:
-    m = yaml.safe_load(f) or {}
-t = m.get('transcripts', {}).get('$BASENAME', {})
-print('true' if t and t.get('processed') == True else 'false')
-")
+          import yaml
+          with open('$MANIFEST_PATH', 'r') as f:
+              m = yaml.safe_load(f) or {}
+          t = m.get('transcripts', {}).get('$BASENAME', {})
+          print('true' if t and t.get('processed') == True else 'false')
+          ")
                 if [ "$IS_PROCESSED" = "true" ]; then
                   echo "  Already processed per manifest, skipping"
                   continue
@@ -227,34 +219,27 @@ print('true' if t and t.get('processed') == True else 'false')
               # Update manifest
               TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-              python3 << PYEOF
-import yaml
-import os
-
-manifest_path = "$MANIFEST_PATH"
-basename = "$BASENAME"
-timestamp = "$TIMESTAMP"
-
-# Load or create manifest
-if os.path.exists(manifest_path):
-    with open(manifest_path, 'r') as f:
-        manifest = yaml.safe_load(f) or {}
-else:
-    manifest = {}
-
-if 'transcripts' not in manifest:
-    manifest['transcripts'] = {}
-
-manifest['transcripts'][basename] = {
-    'processed': True,
-    'dispatched_at': timestamp
-}
-
-with open(manifest_path, 'w') as f:
-    yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
-
-print(f"  Updated manifest: {basename} -> processed: true")
-PYEOF
+              python3 -c "
+          import yaml
+          import os
+          manifest_path = '$MANIFEST_PATH'
+          basename = '$BASENAME'
+          timestamp = '$TIMESTAMP'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r') as f:
+                  manifest = yaml.safe_load(f) or {}
+          else:
+              manifest = {}
+          if 'transcripts' not in manifest:
+              manifest['transcripts'] = {}
+          manifest['transcripts'][basename] = {
+              'processed': True,
+              'dispatched_at': timestamp
+          }
+          with open(manifest_path, 'w') as f:
+              yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
+          print(f'  Updated manifest: {basename} -> processed: true')
+          "
             else
               echo "  Failed to dispatch (HTTP $HTTP_CODE)"
               cat /tmp/dispatch_response.txt
