@@ -3,6 +3,7 @@
 Bootstrap the complete LEGATO system.
 
 Creates and initializes:
+- Legato.Conduct (orchestrator)
 - Legato.Library (knowledge store)
 - Legato.Listen (semantic correlation index)
 
@@ -17,6 +18,9 @@ import json
 import argparse
 import subprocess
 import base64
+import shutil
+import tempfile
+from pathlib import Path
 from datetime import datetime
 
 
@@ -82,6 +86,115 @@ def create_file(repo: str, path: str, content: str, message: str, dry_run: bool 
     else:
         print(f"  [FAILED] {path}: {result.stderr}")
         return False
+
+
+def get_seed_dir() -> Path:
+    """Get the directory containing the seed files (this repo)."""
+    # bootstrap.py is in scripts/, so parent.parent is repo root
+    return Path(__file__).parent.parent
+
+
+def bootstrap_conduct(org: str, dry_run: bool = False) -> bool:
+    """Bootstrap Legato.Conduct repository from seed files."""
+    repo = f"{org}/Legato.Conduct"
+    print(f"\nBootstrapping {repo}...")
+
+    if not create_repo(repo, "LEGATO Orchestrator - Voice transcripts to knowledge and projects", dry_run):
+        return False
+
+    if dry_run:
+        seed_dir = get_seed_dir()
+        # List what would be copied
+        for item in seed_dir.rglob("*"):
+            if ".git" in item.parts:
+                continue
+            if item.is_file():
+                rel_path = item.relative_to(seed_dir)
+                print(f"  [DRY RUN] Would copy: {rel_path}")
+        return True
+
+    # Clone the new repo, copy files, push
+    seed_dir = get_seed_dir()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        clone_dir = Path(tmpdir) / "conduct"
+
+        # Clone the empty repo
+        result = subprocess.run(
+            ["gh", "repo", "clone", repo, str(clone_dir)],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            # Repo might be empty, try to initialize it
+            clone_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init"], cwd=clone_dir, check=True)
+            subprocess.run(
+                ["git", "remote", "add", "origin", f"https://github.com/{repo}.git"],
+                cwd=clone_dir,
+                check=True
+            )
+
+        # Copy all files from seed dir (excluding .git)
+        for item in seed_dir.iterdir():
+            if item.name == ".git":
+                continue
+            dest = clone_dir / item.name
+            if item.is_dir():
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(item, dest)
+            else:
+                shutil.copy2(item, dest)
+
+        # Update README to reflect it's the deployed version
+        readme_path = clone_dir / "README.md"
+        if readme_path.exists():
+            content = readme_path.read_text()
+            # Add deployment notice at the top
+            notice = f"""# Legato.Conduct
+
+> **Deployed LEGATO Orchestrator** - Part of the [{org}](https://github.com/{org}) LEGATO system.
+
+---
+
+"""
+            # Find where the actual content starts (after the title)
+            if content.startswith("# LEGATO Specification"):
+                content = notice + content
+                readme_path.write_text(content)
+
+        # Commit and push
+        subprocess.run(["git", "add", "."], cwd=clone_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Initialize Legato.Conduct from seed"],
+            cwd=clone_dir,
+            capture_output=True
+        )
+
+        # Push (handle both main and master)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=clone_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["git", "branch", "-M", "main"],
+                cwd=clone_dir,
+                check=True
+            )
+            subprocess.run(
+                ["git", "push", "-u", "origin", "main"],
+                cwd=clone_dir,
+                check=True
+            )
+
+        print(f"  [DEPLOYED] All files pushed to {repo}")
+
+    return True
 
 
 def bootstrap_library(org: str, dry_run: bool = False) -> bool:
@@ -592,12 +705,17 @@ def main():
     parser.add_argument(
         "--org",
         default="Legato",
-        help="GitHub organization name"
+        help="GitHub organization or username"
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be created without actually creating"
+    )
+    parser.add_argument(
+        "--conduct-only",
+        action="store_true",
+        help="Only bootstrap Conduct"
     )
     parser.add_argument(
         "--library-only",
@@ -609,29 +727,61 @@ def main():
         action="store_true",
         help="Only bootstrap Listen"
     )
+    parser.add_argument(
+        "--skip-conduct",
+        action="store_true",
+        help="Skip Conduct (only create Library and Listen)"
+    )
     args = parser.parse_args()
 
-    # Check for gh CLI
-    result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
-    if result.returncode != 0:
-        print("Error: Not authenticated with GitHub CLI", file=sys.stderr)
-        print("Run: gh auth login", file=sys.stderr)
-        sys.exit(1)
+    # Check for gh CLI (skip for dry-run to allow previewing)
+    if not args.dry_run:
+        try:
+            result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+            if result.returncode != 0:
+                print("Error: Not authenticated with GitHub CLI", file=sys.stderr)
+                print("Run: gh auth login", file=sys.stderr)
+                sys.exit(1)
+        except FileNotFoundError:
+            print("Error: GitHub CLI (gh) not found", file=sys.stderr)
+            print("Install from: https://cli.github.com/", file=sys.stderr)
+            sys.exit(1)
 
     print("=" * 50)
     print("LEGATO System Bootstrap")
     print("=" * 50)
     print(f"Organization: {args.org}")
     print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
+    print()
+    print("Repositories to create:")
+
+    only_one = args.conduct_only or args.library_only or args.listen_only
+
+    will_conduct = (args.conduct_only or not only_one) and not args.skip_conduct
+    will_library = args.library_only or (not only_one and not args.conduct_only)
+    will_listen = args.listen_only or (not only_one and not args.conduct_only)
+
+    if will_conduct:
+        print(f"  - {args.org}/Legato.Conduct (orchestrator)")
+    if will_library:
+        print(f"  - {args.org}/Legato.Library (knowledge store)")
+    if will_listen:
+        print(f"  - {args.org}/Legato.Listen (semantic brain)")
+
     print("=" * 50)
 
     success = True
 
-    if not args.listen_only:
+    # Bootstrap in order: Conduct first, then Library, then Listen
+    if will_conduct:
+        if not bootstrap_conduct(args.org, args.dry_run):
+            success = False
+
+    if will_library:
         if not bootstrap_library(args.org, args.dry_run):
             success = False
 
-    if not args.library_only:
+    if will_listen:
         if not bootstrap_listen(args.org, args.dry_run):
             success = False
 
@@ -641,15 +791,26 @@ def main():
         print("Bootstrap complete!")
         if not args.dry_run:
             print()
+            print("Your LEGATO system is ready!")
+            print()
+            print("Repositories created:")
+            if will_conduct:
+                print(f"  https://github.com/{args.org}/Legato.Conduct")
+            if will_library:
+                print(f"  https://github.com/{args.org}/Legato.Library")
+            if will_listen:
+                print(f"  https://github.com/{args.org}/Legato.Listen")
+            print()
             print("Next steps:")
             print(f"  1. Configure secrets in {args.org}/Legato.Conduct:")
-            print("     - ANTHROPIC_API_KEY")
-            print("     - OPENAI_API_KEY (for embeddings)")
-            print("     - LIBRARY_PAT, LISTEN_PAT, LAB_PAT")
+            print("     - ANTHROPIC_API_KEY (required)")
+            print("     - OPENAI_API_KEY (for embeddings, optional)")
+            print("     - LIBRARY_PAT, LISTEN_PAT, LAB_PAT (can be same token)")
             print()
-            print("  2. Enable Copilot Coding Agent in org settings")
-            print()
-            print("  3. Test with: ./legato process 'Your transcript here'")
+            print("  2. Clone and use:")
+            print(f"     git clone https://github.com/{args.org}/Legato.Conduct")
+            print("     cd Legato.Conduct")
+            print("     ./legato process 'Your transcript here'")
     else:
         print("Bootstrap completed with errors")
         sys.exit(1)
