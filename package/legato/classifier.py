@@ -94,11 +94,15 @@ class ClassifiedThread:
 
         knowledge_category = None
         if data.get("knowledge_category"):
-            knowledge_category = KnowledgeCategory(data["knowledge_category"])
+            # Normalize to lowercase to handle Claude returning EPIPHANY vs epiphany
+            category_value = data["knowledge_category"].lower()
+            knowledge_category = KnowledgeCategory(category_value)
 
         project_scope = None
         if data.get("project_scope"):
-            project_scope = ProjectScope(data["project_scope"])
+            # Normalize to lowercase
+            scope_value = data["project_scope"].lower()
+            project_scope = ProjectScope(scope_value)
 
         return cls(
             id=data.get("id", ""),
