@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legato"
+version = "0.3.0"
+description = "Voice transcripts to structured knowledge and executable projects"
+readme = "../README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "LEGATO Team"}
+]
+keywords = ["voice", "transcription", "knowledge-management", "github", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "anthropic>=0.18.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+embeddings = [
+    "numpy>=1.24.0",
+    "sentence-transformers>=2.2.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+all = [
+    "legato[embeddings,dev]",
+]
+
+[project.scripts]
+legato = "legato.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Legato/Legato.Conduct"
+Documentation = "https://github.com/Legato/Legato.Conduct#readme"
+Repository = "https://github.com/Legato/Legato.Conduct"
+Issues = "https://github.com/Legato/Legato.Conduct/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+legato = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

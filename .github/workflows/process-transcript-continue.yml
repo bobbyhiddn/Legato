@@ -1,0 +1,68 @@
+name: Process Transcript (continue)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  process-comment:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.issue.labels.*.name, 'legato-pending') &&
+      (
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'MEMBER'
+      )
+    steps:
+      - name: Parse comment for action
+        id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          COMMENT_LOWER="$(echo "${COMMENT_BODY}" | tr '[:upper:]' '[:lower:]' | xargs)"
+
+          if [[ "${COMMENT_LOWER}" =~ ^(approve|lgtm|ship)$ ]]; then
+            echo "action=approve" >> $GITHUB_OUTPUT
+          elif [[ "${COMMENT_LOWER}" =~ ^(reject|skip)$ ]]; then
+            echo "action=reject" >> $GITHUB_OUTPUT
+          elif [[ "${COMMENT_LOWER}" =~ ^reclassify ]]; then
+            echo "action=reclassify" >> $GITHUB_OUTPUT
+          else
+            echo "action=revise" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Handle approval
+        if: steps.parse.outputs.action == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --squash --delete-branch
+          gh pr edit --remove-label "legato-pending"
+
+      - name: Handle rejection
+        if: steps.parse.outputs.action == 'reject'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr close
+          gh pr edit --remove-label "legato-pending"
+
+      - name: Handle reclassification
+        if: steps.parse.outputs.action == 'reclassify'
+        run: |
+          echo "Triggering reclassification workflow..."
+
+      - name: Handle revision request
+        if: steps.parse.outputs.action == 'revise'
+        run: |
+          echo "Processing revision request: ${COMMENT_BODY}"

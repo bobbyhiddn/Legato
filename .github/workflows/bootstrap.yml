@@ -1,0 +1,47 @@
+name: Bootstrap System
+
+on:
+  workflow_dispatch:
+    inputs:
+      org:
+        description: 'GitHub organization name'
+        required: true
+        default: 'Legato'
+        type: string
+      dry_run:
+        description: 'Dry run (show what would be created)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bootstrap LEGATO System
+        env:
+          GH_TOKEN: ${{ secrets.SYSTEM_PAT }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python scripts/bootstrap.py --org "${{ inputs.org }}" --dry-run
+          else
+            python scripts/bootstrap.py --org "${{ inputs.org }}"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Bootstrap Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Created repositories:" >> $GITHUB_STEP_SUMMARY
+          echo "- ${{ inputs.org }}/Legato.Library" >> $GITHUB_STEP_SUMMARY
+          echo "- ${{ inputs.org }}/Legato.Listen" >> $GITHUB_STEP_SUMMARY

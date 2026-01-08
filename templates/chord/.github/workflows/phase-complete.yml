@@ -1,0 +1,70 @@
+name: Phase Complete
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  next-phase:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine completed phase
+        id: phase
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+
+          if [[ "${PR_TITLE}" =~ [Pp]hase.?1 ]]; then
+            echo "completed=1" >> $GITHUB_OUTPUT
+            echo "next=2" >> $GITHUB_OUTPUT
+          elif [[ "${PR_TITLE}" =~ [Pp]hase.?2 ]]; then
+            echo "completed=2" >> $GITHUB_OUTPUT
+            echo "next=3" >> $GITHUB_OUTPUT
+          elif [[ "${PR_TITLE}" =~ [Pp]hase.?3 ]]; then
+            echo "completed=3" >> $GITHUB_OUTPUT
+            echo "next=done" >> $GITHUB_OUTPUT
+          else
+            echo "completed=unknown" >> $GITHUB_OUTPUT
+            echo "next=unknown" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update SIGNAL.md
+        if: steps.phase.outputs.completed != 'unknown'
+        run: |
+          COMPLETED="${{ steps.phase.outputs.completed }}"
+          # Update phase status in SIGNAL.md
+          sed -i "s/| ${COMPLETED} | Pending/| ${COMPLETED} | Complete/" SIGNAL.md
+
+          git config user.name "LEGATO Bot"
+          git config user.email "legato@users.noreply.github.com"
+          git add SIGNAL.md
+          git commit -m "Mark Phase ${COMPLETED} complete" || true
+          git push || true
+
+      - name: Create next phase issue
+        if: steps.phase.outputs.next != 'done' && steps.phase.outputs.next != 'unknown'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEXT="${{ steps.phase.outputs.next }}"
+          PLAN_FILE="plans/phase-0${NEXT}-*.md"
+
+          # Read phase plan if it exists
+          if ls ${PLAN_FILE} 1> /dev/null 2>&1; then
+            PLAN_CONTENT=$(cat ${PLAN_FILE})
+          else
+            PLAN_CONTENT="Implement Phase ${NEXT}"
+          fi
+
+          gh issue create \
+            --title "Phase ${NEXT} Implementation" \
+            --body "${PLAN_CONTENT}" \
+            --label "copilot-task,phase-${NEXT}"
+
+      - name: Project complete notification
+        if: steps.phase.outputs.next == 'done'
+        run: |
+          echo "All phases complete!"
+          # Could trigger a notification or update to Legato.Listen
