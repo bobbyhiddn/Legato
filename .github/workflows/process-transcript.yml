@@ -1,0 +1,150 @@
+name: Process Transcript
+
+on:
+  workflow_dispatch:
+    inputs:
+      transcript:
+        description: 'Raw transcript text or file path'
+        required: true
+        type: string
+      source:
+        description: 'Source identifier (e.g., voice-memo-2026-01-07)'
+        required: false
+        type: string
+  repository_dispatch:
+    types: [transcript-received]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    outputs:
+      threads_json: ${{ steps.parse.outputs.threads_json }}
+      thread_count: ${{ steps.parse.outputs.thread_count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -e package/
+
+      - name: Parse transcript into threads
+        id: parse
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TRANSCRIPT: ${{ github.event.inputs.transcript || github.event.client_payload.transcript }}
+          SOURCE_ID: ${{ github.event.inputs.source || github.event.client_payload.source }}
+        run: |
+          python -m legato.classifier --phase parse --output threads.json
+          echo "threads_json=$(cat threads.json | jq -c .)" >> $GITHUB_OUTPUT
+          echo "thread_count=$(cat threads.json | jq 'length')" >> $GITHUB_OUTPUT
+
+      - name: Upload parsed threads
+        uses: actions/upload-artifact@v4
+        with:
+          name: parsed-threads
+          path: threads.json
+
+  classify:
+    runs-on: ubuntu-latest
+    needs: parse
+    outputs:
+      routing_json: ${{ steps.classify.outputs.routing_json }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download parsed threads
+        uses: actions/download-artifact@v4
+        with:
+          name: parsed-threads
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -e package/
+
+      - name: Classify threads and check correlation
+        id: classify
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -m legato.classifier --phase classify --input threads.json --output routing.json
+          echo "routing_json=$(cat routing.json | jq -c .)" >> $GITHUB_OUTPUT
+
+      - name: Upload routing decisions
+        uses: actions/upload-artifact@v4
+        with:
+          name: routing-decisions
+          path: routing.json
+
+  process-knowledge:
+    runs-on: ubuntu-latest
+    needs: classify
+    if: contains(needs.classify.outputs.routing_json, '"type":"KNOWLEDGE"')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download routing decisions
+        uses: actions/download-artifact@v4
+        with:
+          name: routing-decisions
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -e package/
+
+      - name: Extract and commit knowledge artifacts
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.LIBRARY_PAT }}
+        run: |
+          python -m legato.knowledge --input routing.json --commit
+
+      - name: Register signals with Listen
+        env:
+          GH_TOKEN: ${{ secrets.LISTEN_PAT }}
+        run: |
+          python -m legato.correlation --register-new
+
+  process-projects:
+    runs-on: ubuntu-latest
+    needs: classify
+    if: contains(needs.classify.outputs.routing_json, '"type":"PROJECT"')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download routing decisions
+        uses: actions/download-artifact@v4
+        with:
+          name: routing-decisions
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -e package/
+
+      - name: Create projects and assign Copilot
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+        run: |
+          python -m legato.projects --input routing.json --spawn-and-assign

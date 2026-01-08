@@ -1,0 +1,144 @@
+name: Spawn Project
+
+on:
+  workflow_call:
+    inputs:
+      project_name:
+        required: true
+        type: string
+      project_type:
+        required: true
+        type: string  # "note" or "chord"
+      signal_json:
+        required: true
+        type: string
+      tasker_body:
+        required: true
+        type: string
+
+jobs:
+  spawn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create repository from template
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          PROJECT_NAME: ${{ inputs.project_name }}
+          PROJECT_TYPE: ${{ inputs.project_type }}
+        run: |
+          # Get organization name from current repo
+          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+          TEMPLATE_REPO="${LEGATO_ORG}/Legato.Conduct"
+
+          # Determine suffix based on project type
+          if [ "${PROJECT_TYPE}" = "note" ]; then
+            SUFFIX="Note"
+          else
+            SUFFIX="Chord"
+          fi
+
+          NEW_REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
+
+          # Create the repository
+          gh repo create "${NEW_REPO}" \
+            --public \
+            --description "LEGATO project: ${PROJECT_NAME}"
+
+          # Clone the new repo
+          gh repo clone "${NEW_REPO}" project-clone
+          cd project-clone
+
+          # Copy template files
+          cp -r "../templates/${PROJECT_TYPE}/." .
+
+          # Initial commit
+          git add .
+          git commit -m "Initialize ${PROJECT_NAME} from LEGATO template"
+          git push
+
+      - name: Write SIGNAL.md
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          SIGNAL_JSON: ${{ inputs.signal_json }}
+          PROJECT_NAME: ${{ inputs.project_name }}
+          PROJECT_TYPE: ${{ inputs.project_type }}
+        run: |
+          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+
+          if [ "${PROJECT_TYPE}" = "note" ]; then
+            SUFFIX="Note"
+          else
+            SUFFIX="Chord"
+          fi
+
+          cd project-clone
+
+          echo "${SIGNAL_JSON}" | python3 -c "
+          import json, sys
+          signal = json.load(sys.stdin)
+          content = f'''# {signal['title']}
+
+          ## Intent
+          {signal['intent']}
+
+          ## Domain Tags
+          {', '.join(signal.get('domain_tags', []))}
+
+          ## Key Phrases
+          {', '.join(signal.get('key_phrases', []))}
+
+          ## Source
+          - Transcript: {signal.get('source_transcript', 'N/A')}
+          - Created: {signal.get('created', 'N/A')}
+          '''
+          print(content)
+          " > SIGNAL.md
+
+          git add SIGNAL.md
+          git commit -m "Add project signal metadata"
+          git push
+
+      - name: Create initial issue for Copilot
+        id: create-issue
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          TASKER_BODY: ${{ inputs.tasker_body }}
+          PROJECT_NAME: ${{ inputs.project_name }}
+          PROJECT_TYPE: ${{ inputs.project_type }}
+        run: |
+          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+
+          if [ "${PROJECT_TYPE}" = "note" ]; then
+            SUFFIX="Note"
+          else
+            SUFFIX="Chord"
+          fi
+
+          REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
+
+          ISSUE_URL=$(gh issue create \
+            --repo "${REPO}" \
+            --title "Initial Implementation" \
+            --body "${TASKER_BODY}" \
+            --label "copilot-task,legato:spawned")
+
+          ISSUE_NUMBER=$(echo "${ISSUE_URL}" | grep -oE '[0-9]+$')
+          echo "issue_number=${ISSUE_NUMBER}" >> $GITHUB_OUTPUT
+          echo "repo=${REPO}" >> $GITHUB_OUTPUT
+
+      - name: Assign issue to Copilot
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          REPO: ${{ steps.create-issue.outputs.repo }}
+          ISSUE_NUMBER: ${{ steps.create-issue.outputs.issue_number }}
+        run: |
+          python scripts/assign_copilot.py \
+            --repo "${REPO}" \
+            --issue "${ISSUE_NUMBER}"

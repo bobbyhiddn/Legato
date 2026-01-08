@@ -1,0 +1,43 @@
+name: Correlate
+
+on:
+  workflow_dispatch:
+    inputs:
+      query_json:
+        description: 'Signal metadata to correlate'
+        required: true
+        type: string
+  repository_dispatch:
+    types: [correlate-request]
+
+jobs:
+  correlate:
+    runs-on: ubuntu-latest
+    outputs:
+      result_json: ${{ steps.correlate.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install numpy sentence-transformers
+
+      - name: Run correlation
+        id: correlate
+        env:
+          QUERY_JSON: ${{ github.event.inputs.query_json || github.event.client_payload.query_json }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/query_listen.py --query "${QUERY_JSON}" --output result.json
+          echo "result=$(cat result.json | jq -c .)" >> $GITHUB_OUTPUT
+
+      - name: Upload correlation result
+        uses: actions/upload-artifact@v4
+        with:
+          name: correlation-result
+          path: result.json
