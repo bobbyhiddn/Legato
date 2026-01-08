@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "anthropic>=0.18.0",
     "requests>=2.31.0",
+    "PyGithub>=2.1.0",
 ]
 
 [project.optional-dependencies]
