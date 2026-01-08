@@ -134,8 +134,12 @@ def load_prompt(prompt_name: str) -> str:
     raise FileNotFoundError(f"Prompt not found: {prompt_file}")
 
 
-def call_claude(system_prompt: str, user_input: str) -> str:
-    """Call Claude API with the given prompts."""
+def call_claude(system_prompt: str, user_input: str, max_tokens: int = 4096) -> tuple[str, str]:
+    """Call Claude API with the given prompts.
+
+    Returns:
+        Tuple of (response_text, stop_reason)
+    """
     try:
         import anthropic
     except ImportError:
@@ -145,12 +149,40 @@ def call_claude(system_prompt: str, user_input: str) -> str:
 
     message = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=4096,
+        max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_input}]
     )
 
-    return message.content[0].text
+    return message.content[0].text, message.stop_reason
+
+
+def repair_truncated_json(text: str) -> str:
+    """Attempt to repair truncated JSON array."""
+    text = text.strip()
+
+    # Count open brackets/braces
+    open_brackets = text.count('[') - text.count(']')
+    open_braces = text.count('{') - text.count('}')
+
+    # Check if we're in a string (odd number of unescaped quotes)
+    in_string = False
+    i = len(text) - 1
+    while i >= 0:
+        if text[i] == '"' and (i == 0 or text[i-1] != '\\'):
+            in_string = not in_string
+            break
+        i -= 1
+
+    # If in string, close it
+    if in_string:
+        text += '"'
+
+    # Close any open braces/brackets
+    text += '}' * open_braces
+    text += ']' * open_brackets
+
+    return text
 
 
 def parse_threads(transcript: str, source_id: Optional[str] = None) -> list[dict]:
@@ -175,7 +207,8 @@ Return format:
 ]
 ```"""
 
-    response = call_claude(prompt, transcript)
+    # Use higher token limit for parsing since output includes full transcript text
+    response, stop_reason = call_claude(prompt, transcript, max_tokens=16384)
 
     # Extract JSON from response
     text = response.strip()
@@ -184,7 +217,23 @@ Return format:
     elif "```" in text:
         text = text.split("```")[1].split("```")[0]
 
-    threads = json.loads(text)
+    # Try to parse JSON, with repair attempt if truncated
+    try:
+        threads = json.loads(text)
+    except json.JSONDecodeError as e:
+        if stop_reason == "max_tokens":
+            print(f"Warning: Response truncated, attempting JSON repair...", file=sys.stderr)
+            repaired = repair_truncated_json(text)
+            try:
+                threads = json.loads(repaired)
+                print(f"JSON repair successful, recovered {len(threads)} threads", file=sys.stderr)
+            except json.JSONDecodeError:
+                raise ValueError(
+                    f"Failed to parse truncated JSON response. "
+                    f"Original error: {e}. Consider splitting the transcript into smaller chunks."
+                )
+        else:
+            raise ValueError(f"Failed to parse Claude response as JSON: {e}")
 
     # Add metadata
     for i, thread in enumerate(threads):
@@ -212,7 +261,7 @@ def classify_threads(threads: list[dict]) -> list[ClassifiedThread]:
     for thread in threads:
         thread_text = thread.get("text", thread.get("raw_text", ""))
 
-        response = call_claude(classifier_prompt, thread_text)
+        response, _ = call_claude(classifier_prompt, thread_text)
 
         # Parse classification response
         text = response.strip()
