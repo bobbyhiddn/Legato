@@ -1,0 +1,91 @@
+name: Watch Transcripts
+
+on:
+  push:
+    paths:
+      - 'transcripts/**'
+      - '!transcripts/.gitkeep'
+      - '!transcripts/processed/**'
+
+permissions:
+  contents: write
+
+jobs:
+  dispatch-to-conduct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect new transcript files
+        id: detect
+        run: |
+          # Get files added/modified in transcripts/ from this push (exclude processed/)
+          FILES=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'transcripts/*' | grep -v '.gitkeep' | grep -v 'processed/' || true)
+
+          if [ -z "$FILES" ]; then
+            echo "has_files=false" >> $GITHUB_OUTPUT
+            echo "No new transcript files detected"
+          else
+            echo "has_files=true" >> $GITHUB_OUTPUT
+            echo "$FILES" > new_files.txt
+            echo "Found transcript files:"
+            cat new_files.txt
+          fi
+
+      - name: Dispatch transcripts to Conduct
+        if: steps.detect.outputs.has_files == 'true'
+        env:
+          SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
+          CONDUCT_REPO: ${{ vars.CONDUCT_REPO || 'bobbyhiddn/Legato.Conduct' }}
+        run: |
+          while IFS= read -r file; do
+            echo "Processing: $file"
+
+            # Read transcript content
+            TRANSCRIPT=$(cat "$file")
+
+            # Extract source ID from filename
+            SOURCE_ID=$(basename "$file" | sed 's/\.[^.]*$//')
+
+            # Dispatch to Legato.Conduct
+            curl -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $SYSTEM_PAT" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${CONDUCT_REPO}/dispatches" \
+              -d "$(jq -n \
+                --arg transcript "$TRANSCRIPT" \
+                --arg source "$SOURCE_ID" \
+                '{
+                  event_type: "transcript-received",
+                  client_payload: {
+                    transcript: $transcript,
+                    source: $source
+                  }
+                }')"
+
+            echo "Dispatched: $SOURCE_ID"
+          done < new_files.txt
+
+      - name: Move processed transcripts to archive
+        if: steps.detect.outputs.has_files == 'true'
+        run: |
+          mkdir -p transcripts/processed
+          while IFS= read -r file; do
+            if [ -f "$file" ]; then
+              BASENAME=$(basename "$file")
+              TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+              mv "$file" "transcripts/processed/${TIMESTAMP}-${BASENAME}"
+            fi
+          done < new_files.txt
+
+      - name: Commit archive
+        if: steps.detect.outputs.has_files == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add transcripts/
+          git diff --staged --quiet || git commit -m "Archive processed transcripts"
+          git push
