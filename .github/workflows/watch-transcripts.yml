@@ -5,52 +5,207 @@ on:
     paths:
       - 'transcripts/**'
       - '!transcripts/.gitkeep'
-      - '!transcripts/processed/**'
 
 permissions:
   contents: write
 
 jobs:
-  dispatch-to-conduct:
+  process-transcripts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Detect new transcript files
+      - name: Setup Python for YAML handling
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Detect changes and process
         id: detect
-        run: |
-          # Get files added/modified in transcripts/ from this push (exclude processed/)
-          FILES=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'transcripts/*' | grep -v '.gitkeep' | grep -v 'processed/' || true)
-
-          if [ -z "$FILES" ]; then
-            echo "has_files=false" >> $GITHUB_OUTPUT
-            echo "No new transcript files detected"
-          else
-            echo "has_files=true" >> $GITHUB_OUTPUT
-            echo "$FILES" > new_files.txt
-            echo "Found transcript files:"
-            cat new_files.txt
-          fi
-
-      - name: Dispatch transcripts to Conduct
-        if: steps.detect.outputs.has_files == 'true'
         env:
           SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
           CONDUCT_REPO: ${{ vars.CONDUCT_REPO || 'bobbyhiddn/Legato.Conduct' }}
         run: |
+          set -e
+
+          TODAY=$(date +%Y-%m-%d)
+          TRANSCRIPTS_TO_DISPATCH=""
+
+          # Get all changed files in transcripts/
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'transcripts/' | grep -v '.gitkeep' || true)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No transcript changes detected"
+            echo "has_work=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Process each changed file
+          for file in $CHANGED_FILES; do
+            echo "Evaluating: $file"
+
+            # Skip if file no longer exists (was moved/deleted)
+            if [ ! -f "$file" ]; then
+              echo "  File no longer exists, skipping"
+              continue
+            fi
+
+            BASENAME=$(basename "$file")
+            DIRNAME=$(dirname "$file")
+
+            # Case 1: Manifest file changed - check for reprocess requests
+            if [[ "$BASENAME" == "manifest.yaml" ]]; then
+              echo "  Manifest changed, checking for reprocess requests..."
+
+              python3 << PYEOF
+import yaml
+
+manifest_path = "$file"
+with open(manifest_path, 'r') as f:
+    manifest = yaml.safe_load(f) or {}
+
+transcripts = manifest.get('transcripts', {})
+reprocess_list = []
+
+for name, meta in transcripts.items():
+    if meta and meta.get('processed') == False:
+        reprocess_list.append(name)
+
+if reprocess_list:
+    print(f"  Found {len(reprocess_list)} transcript(s) to reprocess")
+    with open('/tmp/reprocess_from_manifest.txt', 'a') as f:
+        for name in reprocess_list:
+            dirname = "$DIRNAME"
+            f.write(f"{dirname}/{name}\n")
+else:
+    print("  No reprocess requests in manifest")
+PYEOF
+              continue
+            fi
+
+            # Case 2: New transcript file (not a manifest)
+            if [[ "$BASENAME" == *.yaml ]]; then
+              echo "  Skipping YAML file"
+              continue
+            fi
+
+            # Check if this transcript is already in a date folder with a manifest
+            if [[ "$DIRNAME" =~ ^transcripts/[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+              # Already in a date folder - check if it's in the manifest
+              MANIFEST_PATH="${DIRNAME}/manifest.yaml"
+              if [ -f "$MANIFEST_PATH" ]; then
+                # Check if already processed
+                IS_PROCESSED=$(python3 -c "
+import yaml
+with open('$MANIFEST_PATH', 'r') as f:
+    m = yaml.safe_load(f) or {}
+t = m.get('transcripts', {}).get('$BASENAME', {})
+print('true' if t and t.get('processed') == True else 'false')
+")
+                if [ "$IS_PROCESSED" = "true" ]; then
+                  echo "  Already processed per manifest, skipping"
+                  continue
+                fi
+              fi
+              # Not yet processed - add to dispatch list
+              echo "  New transcript in date folder, will dispatch"
+              echo "$file" >> /tmp/new_transcripts.txt
+            else
+              # Not in a date folder - needs to be organized
+              echo "  New transcript needs organizing into date folder"
+              echo "$file" >> /tmp/unorganized_transcripts.txt
+            fi
+          done
+
+          # Count work to do
+          UNORG_COUNT=0
+          NEW_COUNT=0
+          REPROC_COUNT=0
+
+          [ -f /tmp/unorganized_transcripts.txt ] && UNORG_COUNT=$(wc -l < /tmp/unorganized_transcripts.txt)
+          [ -f /tmp/new_transcripts.txt ] && NEW_COUNT=$(wc -l < /tmp/new_transcripts.txt)
+          [ -f /tmp/reprocess_from_manifest.txt ] && REPROC_COUNT=$(wc -l < /tmp/reprocess_from_manifest.txt)
+
+          TOTAL=$((UNORG_COUNT + NEW_COUNT + REPROC_COUNT))
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "No transcripts to process"
+            echo "has_work=false" >> $GITHUB_OUTPUT
+          else
+            echo "Work summary: $UNORG_COUNT to organize, $NEW_COUNT new, $REPROC_COUNT to reprocess"
+            echo "has_work=true" >> $GITHUB_OUTPUT
+            echo "unorganized_count=$UNORG_COUNT" >> $GITHUB_OUTPUT
+            echo "new_count=$NEW_COUNT" >> $GITHUB_OUTPUT
+            echo "reprocess_count=$REPROC_COUNT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Organize unorganized transcripts
+        if: steps.detect.outputs.has_work == 'true' && steps.detect.outputs.unorganized_count != '0'
+        run: |
+          TODAY=$(date +%Y-%m-%d)
+
           while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            [ ! -f "$file" ] && continue
+
+            BASENAME=$(basename "$file")
+            TARGET_DIR="transcripts/${TODAY}"
+            TARGET_PATH="${TARGET_DIR}/${BASENAME}"
+
+            echo "Organizing: $file -> $TARGET_PATH"
+
+            mkdir -p "$TARGET_DIR"
+            mv "$file" "$TARGET_PATH"
+
+            # Add to new transcripts list for dispatch
+            echo "$TARGET_PATH" >> /tmp/new_transcripts.txt
+
+          done < /tmp/unorganized_transcripts.txt
+
+      - name: Dispatch and update manifests
+        if: steps.detect.outputs.has_work == 'true'
+        env:
+          SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
+          CONDUCT_REPO: ${{ vars.CONDUCT_REPO || 'bobbyhiddn/Legato.Conduct' }}
+        run: |
+          # Combine all transcripts to dispatch
+          cat /tmp/new_transcripts.txt /tmp/reprocess_from_manifest.txt 2>/dev/null | sort -u > /tmp/all_to_dispatch.txt || true
+
+          if [ ! -s /tmp/all_to_dispatch.txt ]; then
+            echo "No transcripts to dispatch"
+            exit 0
+          fi
+
+          echo "Dispatching transcripts to Conduct..."
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            [ ! -f "$file" ] && continue
+
+            BASENAME=$(basename "$file")
+            DIRNAME=$(dirname "$file")
+            MANIFEST_PATH="${DIRNAME}/manifest.yaml"
+
             echo "Processing: $file"
 
             # Read transcript content
             TRANSCRIPT=$(cat "$file")
 
-            # Extract source ID from filename
-            SOURCE_ID=$(basename "$file" | sed 's/\.[^.]*$//')
+            # Extract source ID from filename (without extension)
+            SOURCE_ID=$(echo "$BASENAME" | sed 's/\.[^.]*$//')
 
             # Dispatch to Legato.Conduct
-            curl -X POST \
+            echo "  Dispatching to ${CONDUCT_REPO}..."
+
+            HTTP_CODE=$(curl -s -o /tmp/dispatch_response.txt -w "%{http_code}" -X POST \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $SYSTEM_PAT" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -64,28 +219,59 @@ jobs:
                     transcript: $transcript,
                     source: $source
                   }
-                }')"
+                }')")
 
-            echo "Dispatched: $SOURCE_ID"
-          done < new_files.txt
+            if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "200" ]; then
+              echo "  Dispatched successfully"
 
-      - name: Move processed transcripts to archive
-        if: steps.detect.outputs.has_files == 'true'
-        run: |
-          mkdir -p transcripts/processed
-          while IFS= read -r file; do
-            if [ -f "$file" ]; then
-              BASENAME=$(basename "$file")
-              TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-              mv "$file" "transcripts/processed/${TIMESTAMP}-${BASENAME}"
+              # Update manifest
+              TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+              python3 << PYEOF
+import yaml
+import os
+
+manifest_path = "$MANIFEST_PATH"
+basename = "$BASENAME"
+timestamp = "$TIMESTAMP"
+
+# Load or create manifest
+if os.path.exists(manifest_path):
+    with open(manifest_path, 'r') as f:
+        manifest = yaml.safe_load(f) or {}
+else:
+    manifest = {}
+
+if 'transcripts' not in manifest:
+    manifest['transcripts'] = {}
+
+manifest['transcripts'][basename] = {
+    'processed': True,
+    'dispatched_at': timestamp
+}
+
+with open(manifest_path, 'w') as f:
+    yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
+
+print(f"  Updated manifest: {basename} -> processed: true")
+PYEOF
+            else
+              echo "  Failed to dispatch (HTTP $HTTP_CODE)"
+              cat /tmp/dispatch_response.txt
             fi
-          done < new_files.txt
 
-      - name: Commit archive
-        if: steps.detect.outputs.has_files == 'true'
+          done < /tmp/all_to_dispatch.txt
+
+      - name: Commit changes
+        if: steps.detect.outputs.has_work == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add transcripts/
-          git diff --staged --quiet || git commit -m "Archive processed transcripts"
-          git push
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Process transcripts and update manifests"
+            git push
+          fi
