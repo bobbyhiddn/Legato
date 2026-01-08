@@ -23,7 +23,7 @@ import base64
 from pathlib import Path
 from datetime import datetime
 
-from github import Github, GithubException, InputGitTreeElement
+from github import Github, GithubException, InputGitTreeElement, Auth
 
 
 def get_github_client() -> Github:
@@ -33,7 +33,7 @@ def get_github_client() -> Github:
         raise RuntimeError(
             "GitHub token not found. Set GH_TOKEN or GITHUB_TOKEN environment variable."
         )
-    return Github(token)
+    return Github(auth=Auth.Token(token))
 
 
 def repo_exists(gh: Github, repo_name: str) -> bool:
@@ -144,6 +144,35 @@ def get_seed_dir() -> Path:
     return Path(__file__).parent.parent
 
 
+def is_repo_empty(repo) -> bool:
+    """Check if a repository has no commits."""
+    try:
+        repo.get_git_ref("heads/main")
+        return False
+    except GithubException:
+        pass
+    try:
+        repo.get_git_ref("heads/master")
+        return False
+    except GithubException:
+        pass
+    # Check if there are any branches at all
+    try:
+        branches = list(repo.get_branches())
+        return len(branches) == 0
+    except GithubException:
+        return True
+
+
+def repo_has_expected_content(repo, expected_file: str = "README.md") -> bool:
+    """Check if repo already has expected content (for idempotency)."""
+    try:
+        repo.get_contents(expected_file)
+        return True
+    except GithubException:
+        return False
+
+
 def push_directory_to_repo(
     gh: Github, repo_name: str, source_dir: Path, commit_message: str, dry_run: bool = False
 ) -> bool:
@@ -152,6 +181,9 @@ def push_directory_to_repo(
 
     This creates blobs for all files, builds a tree, and creates a commit,
     avoiding the need for git CLI entirely.
+
+    For empty repos, falls back to creating files via Contents API.
+    Idempotent: skips if repo already has expected content.
     """
     if dry_run:
         for item in source_dir.rglob("*"):
@@ -164,6 +196,11 @@ def push_directory_to_repo(
 
     try:
         repo = gh.get_repo(repo_name)
+
+        # Check if repo already has content (idempotency)
+        if repo_has_expected_content(repo, "README.md"):
+            print(f"  [EXISTS] {repo_name} already has content, skipping")
+            return True
 
         # Collect all files to push
         files_to_push = []
@@ -207,7 +244,12 @@ def push_directory_to_repo(
             print("  [WARNING] No files to push")
             return True
 
-        # Create tree elements
+        # Check if repo is empty - if so, use Contents API fallback
+        if is_repo_empty(repo):
+            print(f"  [INFO] Repository is empty, using Contents API")
+            return _push_files_via_contents_api(repo, files_to_push, repo_name)
+
+        # Create tree elements for Git Data API
         tree_elements = []
         for file_info in files_to_push:
             if "content_b64" in file_info:
@@ -232,16 +274,11 @@ def push_directory_to_repo(
                     )
                 )
 
-        # Try to get existing main branch, or create from scratch
-        try:
-            main_ref = repo.get_git_ref("heads/main")
-            base_tree = repo.get_git_commit(main_ref.object.sha).tree
-            tree = repo.create_git_tree(tree_elements, base_tree)
-            parent_commits = [repo.get_git_commit(main_ref.object.sha)]
-        except GithubException:
-            # No main branch yet - create tree without base
-            tree = repo.create_git_tree(tree_elements)
-            parent_commits = []
+        # Get existing main branch
+        main_ref = repo.get_git_ref("heads/main")
+        base_tree = repo.get_git_commit(main_ref.object.sha).tree
+        tree = repo.create_git_tree(tree_elements, base_tree)
+        parent_commits = [repo.get_git_commit(main_ref.object.sha)]
 
         # Create commit
         commit = repo.create_git_commit(
@@ -250,13 +287,8 @@ def push_directory_to_repo(
             parents=parent_commits,
         )
 
-        # Update or create main branch reference
-        try:
-            main_ref = repo.get_git_ref("heads/main")
-            main_ref.edit(sha=commit.sha, force=True)
-        except GithubException:
-            # Create main branch
-            repo.create_git_ref(ref="refs/heads/main", sha=commit.sha)
+        # Update main branch reference
+        main_ref.edit(sha=commit.sha, force=True)
 
         print(f"  [DEPLOYED] {len(files_to_push)} files pushed to {repo_name}")
         return True
@@ -265,6 +297,46 @@ def push_directory_to_repo(
         error_msg = e.data.get("message", str(e)) if hasattr(e, "data") else str(e)
         print(f"  [FAILED] Push to {repo_name}: {error_msg}")
         return False
+
+
+def _push_files_via_contents_api(repo, files_to_push: list, repo_name: str) -> bool:
+    """
+    Fallback: push files one by one using the Contents API.
+    Works for empty repos where Git Data API fails.
+    """
+    success_count = 0
+    for file_info in files_to_push:
+        path = file_info["path"]
+        try:
+            if "content_b64" in file_info:
+                content_bytes = base64.b64decode(file_info["content_b64"])
+            else:
+                content_bytes = file_info["content"].encode("utf-8")
+
+            # Check if file already exists
+            try:
+                repo.get_contents(path)
+                print(f"    [EXISTS] {path}")
+                success_count += 1
+                continue
+            except GithubException as e:
+                if e.status != 404:
+                    raise
+
+            # Create the file
+            repo.create_file(
+                path=path,
+                message=f"Add {path}",
+                content=content_bytes,
+            )
+            print(f"    [CREATED] {path}")
+            success_count += 1
+        except GithubException as e:
+            error_msg = e.data.get("message", str(e)) if hasattr(e, "data") else str(e)
+            print(f"    [FAILED] {path}: {error_msg}")
+
+    print(f"  [DEPLOYED] {success_count}/{len(files_to_push)} files pushed to {repo_name}")
+    return success_count == len(files_to_push)
 
 
 def bootstrap_conduct(gh: Github, org: str, dry_run: bool = False) -> bool:
