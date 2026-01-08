@@ -373,3 +373,17 @@ a {
 a:hover {
     text-decoration: underline;
 }
+
+/* Rate Limit */
+#rate-limit-info {
+    color: var(--text-muted);
+}
+
+#rate-limit-info.rate-warning {
+    color: var(--accent-yellow);
+}
+
+.rate-limited {
+    color: var(--accent-red);
+    font-weight: 500;
+}

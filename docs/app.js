@@ -9,12 +9,35 @@ const REPOS = {
     listen: 'Legato.Listen'
 };
 
+// Rate limit tracking
+let rateLimitRemaining = null;
+let rateLimitReset = null;
+let isRateLimited = false;
+
 // Get config from inputs
 function getConfig() {
     return {
         org: document.getElementById('org').value || 'bobbyhiddn',
-        token: document.getElementById('token').value || null
+        token: document.getElementById('token').value || localStorage.getItem('legato-token') || null
     };
+}
+
+// Update rate limit display
+function updateRateLimitDisplay() {
+    const el = document.getElementById('rate-limit-info');
+    if (!el) return;
+
+    if (isRateLimited) {
+        const resetTime = new Date(rateLimitReset * 1000);
+        el.innerHTML = `<span class="rate-limited">Rate limited! Resets at ${resetTime.toLocaleTimeString()}. Add a token for 5000 req/hr.</span>`;
+        el.style.display = 'block';
+    } else if (rateLimitRemaining !== null) {
+        const hasToken = !!getConfig().token;
+        const limit = hasToken ? 5000 : 60;
+        el.innerHTML = `API: ${rateLimitRemaining}/${limit} requests remaining`;
+        el.style.display = 'block';
+        el.className = rateLimitRemaining < 10 ? 'rate-warning' : '';
+    }
 }
 
 // GitHub API helper
@@ -30,10 +53,25 @@ async function githubFetch(endpoint) {
 
     const response = await fetch(`https://api.github.com${endpoint}`, { headers });
 
+    // Track rate limit
+    rateLimitRemaining = parseInt(response.headers.get('X-RateLimit-Remaining'));
+    rateLimitReset = parseInt(response.headers.get('X-RateLimit-Reset'));
+    updateRateLimitDisplay();
+
+    if (response.status === 403) {
+        const data = await response.json().catch(() => ({}));
+        if (data.message && data.message.includes('rate limit')) {
+            isRateLimited = true;
+            updateRateLimitDisplay();
+            throw new Error('Rate limited - add a GitHub token for more requests');
+        }
+    }
+
     if (!response.ok) {
         throw new Error(`GitHub API error: ${response.status}`);
     }
 
+    isRateLimited = false;
     return response.json();
 }
 
@@ -397,14 +435,35 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('org').value = savedOrg;
     }
 
+    // Load saved token from localStorage
+    const savedToken = localStorage.getItem('legato-token');
+    if (savedToken) {
+        document.getElementById('token').value = savedToken;
+    }
+
     // Save org on change
     document.getElementById('org').addEventListener('change', (e) => {
         localStorage.setItem('legato-org', e.target.value);
     });
 
+    // Save token on change
+    document.getElementById('token').addEventListener('change', (e) => {
+        if (e.target.value) {
+            localStorage.setItem('legato-token', e.target.value);
+        } else {
+            localStorage.removeItem('legato-token');
+        }
+        isRateLimited = false; // Reset rate limit flag when token changes
+    });
+
     // Initial load
     refreshAll();
 
-    // Auto-refresh every 60 seconds
-    setInterval(refreshAll, 60000);
+    // Auto-refresh every 5 minutes (reduced to avoid rate limits)
+    // If rate limited, skip refresh
+    setInterval(() => {
+        if (!isRateLimited) {
+            refreshAll();
+        }
+    }, 300000);
 });
