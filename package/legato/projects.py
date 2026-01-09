@@ -298,13 +298,60 @@ def create_issue_and_assign(spec: ProjectSpec, org: str = "Legato") -> dict:
     }
 
 
-def process_routing(routing_file: str, spawn_and_assign: bool = False) -> list[dict]:
+def queue_to_pit(spec: ProjectSpec) -> dict:
+    """
+    Queue a project to Pit for approval.
+
+    Args:
+        spec: Project specification
+
+    Returns:
+        Queue result from Pit API
+    """
+    import requests
+
+    pit_url = os.environ.get("PIT_URL", "https://legato-pit.fly.dev")
+    token = os.environ.get("SYSTEM_PAT")
+
+    if not token:
+        raise RuntimeError("SYSTEM_PAT environment variable not set")
+
+    payload = {
+        "project_name": spec.name,
+        "project_type": spec.scope.value,
+        "title": spec.title,
+        "description": spec.description,
+        "signal_json": spec.to_signal(),
+        "tasker_body": spec.tasker_body or "",
+        "source_transcript": spec.source_transcript,
+    }
+
+    response = requests.post(
+        f"{pit_url}/agents/api/queue",
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        timeout=15,
+    )
+
+    if response.status_code == 200:
+        result = response.json()
+        print(f"Queued to Pit: {result.get('queue_id')} - {spec.name}")
+        return result
+    else:
+        raise RuntimeError(f"Pit queue failed: {response.status_code} - {response.text}")
+
+
+def process_routing(routing_file: str, spawn_and_assign: bool = False, queue_to_pit_flag: bool = False) -> list[dict]:
     """
     Process all PROJECT items from a routing file.
 
     Args:
         routing_file: Path to routing.json
         spawn_and_assign: Whether to actually spawn repos and assign
+        queue_to_pit_flag: Whether to queue to Pit for approval
 
     Returns:
         List of results
@@ -323,7 +370,12 @@ def process_routing(routing_file: str, spawn_and_assign: bool = False) -> list[d
         try:
             spec = create_project(thread)
 
-            if spawn_and_assign:
+            if queue_to_pit_flag:
+                # Queue to Pit for approval
+                result = queue_to_pit(spec)
+                result["project_name"] = spec.name
+                result["action"] = "queued_to_pit"
+            elif spawn_and_assign:
                 # Spawn repository
                 spawn_result = spawn_lab_repo(spec)
 
@@ -363,21 +415,30 @@ def main():
         help="Actually spawn repos and assign to Copilot"
     )
     parser.add_argument(
+        "--queue-to-pit",
+        action="store_true",
+        help="Queue projects to Pit for approval instead of spawning"
+    )
+    parser.add_argument(
         "--output",
         help="Output results file"
     )
     args = parser.parse_args()
 
-    results = process_routing(args.input, args.spawn_and_assign)
+    results = process_routing(args.input, args.spawn_and_assign, args.queue_to_pit)
 
     if args.output:
         with open(args.output, "w") as f:
             json.dump(results, f, indent=2)
 
+    queued = len([r for r in results if r.get("action") == "queued_to_pit"])
     spawned = len([r for r in results if r.get("created")])
     errors = len([r for r in results if "error" in r])
 
-    print(f"Processed {len(results)} projects: {spawned} spawned, {errors} errors")
+    if queued:
+        print(f"Processed {len(results)} projects: {queued} queued to Pit, {errors} errors")
+    else:
+        print(f"Processed {len(results)} projects: {spawned} spawned, {errors} errors")
 
 
 if __name__ == "__main__":

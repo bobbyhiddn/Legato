@@ -1,0 +1,118 @@
+name: Spawn Agent from Pit
+
+on:
+  repository_dispatch:
+    types: [spawn-agent]
+
+permissions:
+  contents: write
+
+jobs:
+  spawn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate payload
+        run: |
+          echo "Queue ID: ${{ github.event.client_payload.queue_id }}"
+          echo "Project: ${{ github.event.client_payload.project_name }}"
+          echo "Type: ${{ github.event.client_payload.project_type }}"
+
+      - name: Create repository from template
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          PROJECT_NAME: ${{ github.event.client_payload.project_name }}
+          PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
+        run: |
+          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+
+          # Determine suffix based on project type
+          if [ "${PROJECT_TYPE}" = "note" ]; then
+            SUFFIX="Note"
+          else
+            SUFFIX="Chord"
+          fi
+
+          NEW_REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
+
+          echo "Creating repository: ${NEW_REPO}"
+
+          # Create the repository
+          gh repo create "${NEW_REPO}" \
+            --public \
+            --description "LEGATO project: ${PROJECT_NAME}"
+
+          # Clone the new repo
+          gh repo clone "${NEW_REPO}" project-clone
+          cd project-clone
+
+          # Copy template files if they exist
+          if [ -d "../templates/${PROJECT_TYPE}" ]; then
+            cp -r "../templates/${PROJECT_TYPE}/." .
+          fi
+
+          # Initial commit
+          git add .
+          git commit -m "Initialize ${PROJECT_NAME} from LEGATO template" || true
+          git push || true
+
+      - name: Write SIGNAL.md
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          SIGNAL_JSON: ${{ toJson(github.event.client_payload.signal_json) }}
+          PROJECT_NAME: ${{ github.event.client_payload.project_name }}
+          PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
+        run: |
+          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+
+          if [ "${PROJECT_TYPE}" = "note" ]; then
+            SUFFIX="Note"
+          else
+            SUFFIX="Chord"
+          fi
+
+          cd project-clone
+
+          # Parse signal JSON and write SIGNAL.md
+          cat > SIGNAL.md << 'SIGNAL_EOF'
+          # Project Signal
+
+          This project was spawned by LEGATO via Pit approval.
+
+          ## Metadata
+          - Queue ID: ${{ github.event.client_payload.queue_id }}
+          - Project: ${{ github.event.client_payload.project_name }}
+          - Type: ${{ github.event.client_payload.project_type }}
+          SIGNAL_EOF
+
+          git add SIGNAL.md
+          git commit -m "Add project signal metadata" || true
+          git push || true
+
+      - name: Create initial issue for Copilot
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          TASKER_BODY: ${{ github.event.client_payload.tasker_body }}
+          PROJECT_NAME: ${{ github.event.client_payload.project_name }}
+          PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
+        run: |
+          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+
+          if [ "${PROJECT_TYPE}" = "note" ]; then
+            SUFFIX="Note"
+          else
+            SUFFIX="Chord"
+          fi
+
+          REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
+
+          echo "Creating issue in ${REPO}"
+
+          ISSUE_URL=$(gh issue create \
+            --repo "${REPO}" \
+            --title "Initial Implementation" \
+            --body "${TASKER_BODY}" \
+            --label "copilot-task,legato:spawned") || true
+
+          echo "Issue created: ${ISSUE_URL}"

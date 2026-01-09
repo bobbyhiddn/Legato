@@ -123,10 +123,50 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.SYSTEM_PAT }}" \
             -H "Content-Type: application/json" || true
 
-  process-projects:
+  queue-to-pit:
     runs-on: ubuntu-latest
     needs: classify
     if: contains(needs.classify.outputs.routing_json, '"type":"PROJECT"')
+    outputs:
+      queued: ${{ steps.queue.outputs.queued }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download routing decisions
+        uses: actions/download-artifact@v4
+        with:
+          name: routing-decisions
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -e .
+
+      - name: Queue projects to Pit for approval
+        id: queue
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
+          PIT_URL: https://legato-pit.fly.dev
+        run: |
+          # Try to queue to Pit
+          python -m legato.projects --input routing.json --queue-to-pit
+          if [ $? -eq 0 ]; then
+            echo "queued=true" >> $GITHUB_OUTPUT
+          else
+            echo "queued=false" >> $GITHUB_OUTPUT
+          fi
+
+  process-projects:
+    runs-on: ubuntu-latest
+    needs: [classify, queue-to-pit]
+    # Only run if Pit queueing failed (fallback path with environment approval)
+    if: |
+      contains(needs.classify.outputs.routing_json, '"type":"PROJECT"') &&
+      needs.queue-to-pit.outputs.queued != 'true'
     environment: lab-spawn  # Requires manual approval before creating Lab repos
     steps:
       - uses: actions/checkout@v4
