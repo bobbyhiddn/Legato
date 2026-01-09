@@ -117,12 +117,11 @@ jobs:
         run: |
           python -m legato.knowledge --input routing.json --commit
 
-      - name: Register signals with Listen
-        env:
-          GH_TOKEN: ${{ secrets.LISTEN_PAT }}
-          LISTEN_REPO: ${{ github.repository_owner }}/Legato.Listen
+      - name: Trigger Pit Library Sync
         run: |
-          python -m legato.correlation --register-new
+          curl -sf -X POST "https://legato-pit.fly.dev/memory/api/sync" \
+            -H "Authorization: Bearer ${{ secrets.SYSTEM_PAT }}" \
+            -H "Content-Type: application/json" || true
 
   process-projects:
     runs-on: ubuntu-latest
