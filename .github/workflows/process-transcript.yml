@@ -149,16 +149,12 @@ jobs:
         id: queue
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
+          LAB_PAT: ${{ secrets.LAB_PAT }}
           PIT_URL: https://legato-pit.fly.dev
         run: |
-          # Try to queue to Pit
+          # Queue to Pit - exit code 1 means error, which fails the job
           python -m legato.projects --input routing.json --queue-to-pit
-          if [ $? -eq 0 ]; then
-            echo "queued=true" >> $GITHUB_OUTPUT
-          else
-            echo "queued=false" >> $GITHUB_OUTPUT
-          fi
+          echo "queued=true" >> $GITHUB_OUTPUT
 
   process-projects:
     runs-on: ubuntu-latest

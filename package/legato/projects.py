@@ -311,10 +311,10 @@ def queue_to_pit(spec: ProjectSpec) -> dict:
     import requests
 
     pit_url = os.environ.get("PIT_URL", "https://legato-pit.fly.dev")
-    token = os.environ.get("SYSTEM_PAT")
+    token = os.environ.get("LAB_PAT")
 
     if not token:
-        raise RuntimeError("SYSTEM_PAT environment variable not set")
+        raise RuntimeError("LAB_PAT environment variable not set")
 
     payload = {
         "project_name": spec.name,
@@ -439,6 +439,10 @@ def main():
         print(f"Processed {len(results)} projects: {queued} queued to Pit, {errors} errors")
     else:
         print(f"Processed {len(results)} projects: {spawned} spawned, {errors} errors")
+
+    # Exit with error code if any errors occurred
+    if errors > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
