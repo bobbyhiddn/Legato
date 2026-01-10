@@ -43,6 +43,9 @@ jobs:
             --public \
             --description "LEGATO project: ${PROJECT_NAME}"
 
+          # Add topic tags for discoverability
+          gh repo edit "${NEW_REPO}" --add-topic "legato-lab" --add-topic "legato-chord"
+
           # Clone the new repo
           gh repo clone "${NEW_REPO}" project-clone
           cd project-clone
@@ -109,10 +112,94 @@ jobs:
 
           echo "Creating issue in ${REPO}"
 
+          # Create the issue
           ISSUE_URL=$(gh issue create \
             --repo "${REPO}" \
             --title "Initial Implementation" \
             --body "${TASKER_BODY}" \
-            --label "copilot-task,legato:spawned") || true
+            --label "copilot") || true
 
           echo "Issue created: ${ISSUE_URL}"
+
+      - name: Assign issue to Copilot via GraphQL
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.LAB_PAT }}
+          PROJECT_NAME: ${{ github.event.client_payload.project_name }}
+          PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
+        run: |
+          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+
+          if [ "${PROJECT_TYPE}" = "note" ]; then
+            SUFFIX="Note"
+          else
+            SUFFIX="Chord"
+          fi
+
+          REPO_NAME="Lab.${PROJECT_NAME}.${SUFFIX}"
+
+          echo "Assigning issue #1 to Copilot in ${LEGATO_ORG}/${REPO_NAME}..."
+
+          # Get issue node ID
+          ISSUE_ID=$(gh api graphql -f query='
+            query($owner: String!, $repo: String!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: 1) {
+                  id
+                }
+              }
+            }
+          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" --jq '.data.repository.issue.id') || true
+
+          if [ -z "${ISSUE_ID}" ]; then
+            echo "Could not get issue ID"
+            exit 0
+          fi
+
+          echo "Issue ID: ${ISSUE_ID}"
+
+          # Get Copilot actor ID from repository suggestedActors
+          # Copilot's login is "copilot-swe-agent"
+          COPILOT_ID=$(gh api graphql -f query='
+            query($owner: String!, $repo: String!) {
+              repository(owner: $owner, name: $repo) {
+                suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+                  nodes {
+                    login
+                    ... on Bot { id }
+                    ... on User { id }
+                  }
+                }
+              }
+            }
+          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id') || true
+
+          if [ -z "${COPILOT_ID}" ]; then
+            echo "Copilot (copilot-swe-agent) not available as assignee"
+            echo "Make sure Copilot coding agent is enabled for this repo/org"
+            exit 0
+          fi
+
+          echo "Copilot ID: ${COPILOT_ID}"
+
+          # Assign to Copilot
+          gh api graphql -f query='
+            mutation($issueId: ID!, $actorIds: [ID!]!) {
+              replaceActorsForAssignable(input: {
+                assignableId: $issueId,
+                actorIds: $actorIds
+              }) {
+                assignable {
+                  ... on Issue {
+                    assignees(first: 5) {
+                      nodes {
+                        login
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f issueId="${ISSUE_ID}" -f actorIds="[\"${COPILOT_ID}\"]" || true
+
+          echo "Copilot assignment complete"
